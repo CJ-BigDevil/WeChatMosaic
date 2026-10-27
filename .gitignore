@@ -1,0 +1,15 @@
+# 编译产物
+*.exe
+*.pdb
+*.obj
+
+# 运行时生成的个人配置（含个人屏幕坐标，不上传）
+mosaic-config.json
+
+# 系统/编辑器
+Thumbs.db
+Desktop.ini
+.vs/
+.vscode/
+*.user
+*.suo
