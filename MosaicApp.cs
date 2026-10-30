@@ -23,7 +23,7 @@ namespace WeChatMosaic
         public double W;
         public double H;
         public string Style = "blur";   // blur | mosaic | solid
-        public string Color = "#CC202020"; // ARGB, solid 用
+        public string Color = "#FF202020"; // ARGB，纯色用（alpha 由 Opacity 覆盖）
         public double Opacity = 0.85;
     }
 
@@ -33,6 +33,12 @@ namespace WeChatMosaic
         public static bool Locked = false;
         public static int HotkeyVk = 0xDC;      // 主键，默认 \ 键
         public static uint HotkeyMods = 0x0004; // 修饰键，默认 Shift(0x4)。Ctrl=0x2 Alt=0x1 Win=0x8
+        public static bool FollowEnabled = true;
+        public static string FollowMode = "smart"; // smart | visible | running | manual
+        public static int PollMs = 300;
+        public static string TargetProcesses = "WeChat,Weixin"; // 跟随的目标进程名，逗号分隔
+        public static bool InvertFollow = false; // true = 反向：目标不可见时才遮
+
 
         // 把修饰键+主键转成可读文字，如 "Shift+|"、"Ctrl+Alt+M"
         public static string HotkeyText()
@@ -68,6 +74,11 @@ namespace WeChatMosaic
                 sb.Append("{\"locked\":").Append(Locked ? "true" : "false")
                   .Append(",\"hotkeyVk\":").Append(HotkeyVk)
                   .Append(",\"hotkeyMods\":").Append(HotkeyMods)
+                  .Append(",\"followEnabled\":").Append(FollowEnabled ? "true" : "false")
+                  .Append(",\"followMode\":\"").Append(FollowMode).Append("\"")
+                  .Append(",\"pollMs\":").Append(PollMs)
+                  .Append(",\"targetProcesses\":\"").Append(TargetProcesses).Append("\"")
+                  .Append(",\"invertFollow\":").Append(InvertFollow ? "true" : "false")
                   .Append(",\"regions\":[");
                 for (int i = 0; i < Regions.Count; i++)
                 {
@@ -101,6 +112,12 @@ namespace WeChatMosaic
                 if (hv > 0) HotkeyVk = (int)hv;
                 var hm = ExtractNum(t, "hotkeyMods", -1);
                 if (hm >= 0) HotkeyMods = (uint)hm;
+                FollowEnabled = t.Contains("\"followEnabled\":true");
+                FollowMode = ExtractStr(t, "followMode", "smart");
+                PollMs = (int)ExtractNum(t, "pollMs", 300);
+                if (PollMs < 50) PollMs = 50;
+                TargetProcesses = ExtractStr(t, "targetProcesses", "WeChat,Weixin");
+                InvertFollow = t.Contains("\"invertFollow\":true");
                 foreach (var block in ExtractObjects(t, "regions"))
                 {
                     var r = new Region();
@@ -109,7 +126,7 @@ namespace WeChatMosaic
                     r.W = ExtractNum(block, "w", 260);
                     r.H = ExtractNum(block, "h", 160);
                     r.Style = ExtractStr(block, "style", "blur");
-                    r.Color = ExtractStr(block, "color", "#CC202020");
+                    r.Color = ExtractStr(block, "color", "#FF202020");
                     r.Opacity = ExtractNum(block, "opacity", 0.85);
                     Regions.Add(r);
                 }
@@ -218,8 +235,26 @@ namespace WeChatMosaic
             Content = root;
             MouseLeftButtonDown += DragStart;
             LocationChanged += (s, e) => SyncBack();
-            SizeChanged += (s, e) => SyncBack();
+            SizeChanged += (s, e) => { SyncBack(); RebuildTextureIfNeeded(); };
             UpdateBadge();
+        }
+
+        // 记住穿透目标状态，等窗口句柄创建后再应用
+        private bool pendingClickThrough = false;
+
+        // 毛玻璃/马赛克/模糊的纹理是按尺寸生成的，尺寸变了必须重建，否则会出现"一块磨砂一块空白"
+        private double lastBuiltW = -1, lastBuiltH = -1;
+
+        private void RebuildTextureIfNeeded()
+        {
+            if (Math.Abs(Width - lastBuiltW) < 1 && Math.Abs(Height - lastBuiltH) < 1) return;
+            ApplyStyle();
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            ApplyClickThrough(pendingClickThrough);
         }
 
         private void UpdateBadge()
@@ -231,7 +266,11 @@ namespace WeChatMosaic
         public void ApplyStyle()
         {
             double op = Data.Opacity;
-            fill.Child = null; // 清掉旧的噪点层
+            // 每个分支都从干净状态开始，避免残留上一种样式的纹理/透明度
+            fill.Child = null;
+            fill.Effect = null;
+            fill.Opacity = 1;
+            fill.Background = Brushes.Transparent;
             if (Data.Style == "glass" || Data.Style == "blend") // blend 为旧版遗留，归入毛玻璃
             {
                 // 毛玻璃：取背后颜色 → 调亮 + 半透明 + 磨砂噪点，隐约见影但读不清字
@@ -245,7 +284,10 @@ namespace WeChatMosaic
             }
             else if (Data.Style == "solid")
             {
-                fill.Background = (Brush)new BrushConverter().ConvertFrom(Data.Color);
+                // 纯色：不透明度由滑块控制（Data.Opacity），不再用颜色里写死的 alpha
+                var sc = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(Data.Color);
+                sc.A = (byte)(op * 255);
+                fill.Background = new SolidColorBrush(sc);
                 fill.Effect = null;
                 fill.Opacity = 1;
             }
@@ -262,27 +304,49 @@ namespace WeChatMosaic
                 fill.Opacity = 1;
                 fill.Child = MakeNoiseCanvas();
             }
+            lastBuiltW = Width;
+            lastBuiltH = Height;
+            MainWindow.RequestSave();
             UpdateBadge();
         }
 
-        // 取遮挡块背后屏幕的颜色（多个点取平均，避免取到单条文字）
+        // 取遮挡块"边缘外侧"一圈的颜色（不采自己区域，无需隐藏窗口，零闪烁）
+        private System.Windows.Media.Color cachedSample = System.Windows.Media.Color.FromRgb(0xF5, 0xF5, 0xF5);
+        private bool suppressResample = false; // 拖拽调整大小时不重复取色，避免闪烁
+
         private System.Windows.Media.Color SampleColorBehind()
         {
             try
             {
-                // 临时隐藏自己，才能取到"底下"的颜色
-                Opacity = 0;
-                DoEvents();
-                System.Drawing.Color c = SampleAverage((int)(Left + Width / 2), (int)(Top + Height / 2),
-                                                       (int)Math.Max(10, Width - 20), (int)Math.Max(10, Height - 20));
-                Opacity = 1;
-                return System.Windows.Media.Color.FromRgb(c.R, c.G, c.B);
+                if (suppressResample) return cachedSample;
+
+                // 采样遮挡块外圈 8 个点（上下左右 + 四角），绕开自己，直接读屏幕
+                IntPtr desk = GetDC(IntPtr.Zero);
+                try
+                {
+                    long r = 0, g = 0, b = 0; int n = 0;
+                    int L = (int)Left, T = (int)Top, W = (int)Width, H = (int)Height;
+                    int m = 6; // 向外偏移像素
+                    // 按边采 8 点（上下左右中点 + 四角）
+                    int[][] pts = {
+                        new[]{ L + W/2, T - m }, new[]{ L + W/2, T + H + m },
+                        new[]{ L - m,   T + H/2 }, new[]{ L + W + m, T + H/2 },
+                        new[]{ L - m,   T - m },   new[]{ L + W + m, T - m },
+                        new[]{ L - m,   T + H + m }, new[]{ L + W + m, T + H + m }
+                    };
+                    foreach (var p in pts)
+                    {
+                        uint px = GetPixel(desk, p[0], p[1]);
+                        if (px == 0xFFFFFFFF) continue; // 取屏外失败跳过
+                        r += px & 0xFF; g += (px >> 8) & 0xFF; b += (px >> 16) & 0xFF; n++;
+                    }
+                    if (n > 0)
+                        cachedSample = System.Windows.Media.Color.FromRgb((byte)(r / n), (byte)(g / n), (byte)(b / n));
+                    return cachedSample;
+                }
+                finally { ReleaseDC(IntPtr.Zero, desk); }
             }
-            catch
-            {
-                Opacity = 1;
-                return System.Windows.Media.Color.FromRgb(0xF5, 0xF5, 0xF5); // 兜底用微信常见的浅灰白
-            }
+            catch { return cachedSample; }
         }
 
         private static System.Drawing.Color SampleAverage(int cx, int cy, int w, int h)
@@ -329,28 +393,33 @@ namespace WeChatMosaic
         private Canvas MakeFrostCanvas()
         {
             var c = new Canvas();
-            var rnd = new Random(3);
+            var rnd = new Random(Guid.NewGuid().GetHashCode()); // 每次重建换一批，避免固定图案
             double w = Math.Max(Data.W, 40), h = Math.Max(Data.H, 30);
 
-            // 1) 密集噪点：白点+灰点混合，密度更高、颗粒更大、对比更强
-            int n = (int)(w * h / 16);   // 密度约为原来 4 倍
-            for (int i = 0; i < n; i++)
-            {
-                double sz = 1.5 + rnd.NextDouble() * 2.6;   // 颗粒更大
-                bool white = rnd.Next(2) == 0;
-                byte alpha = (byte)(white ? (110 + rnd.Next(120)) : (70 + rnd.Next(90))); // 更深
-                byte gray = (byte)(white ? 255 : (150 + rnd.Next(80)));                    // 灰点增加层次
-                var dot = new Ellipse
+            // 1) 抖动网格噪点：把画面分成均匀小格，每格内随机放 1 个点 → 均匀铺开但不机械
+            double cell = 3.5;                     // 格子边长，越小越密
+            int cols = Math.Max(1, (int)(w / cell));
+            int rows = Math.Max(1, (int)(h / cell));
+            for (int gy = 0; gy < rows; gy++)
+                for (int gx = 0; gx < cols; gx++)
                 {
-                    Width = sz, Height = sz,
-                    Fill = new SolidColorBrush(System.Windows.Media.Color.FromArgb(alpha, gray, gray, gray))
-                };
-                Canvas.SetLeft(dot, rnd.NextDouble() * w);
-                Canvas.SetTop(dot, rnd.NextDouble() * h);
-                c.Children.Add(dot);
-            }
+                    double px = (gx + rnd.NextDouble()) * (w / cols);
+                    double py = (gy + rnd.NextDouble()) * (h / rows);
+                    double sz = 1.0 + rnd.NextDouble() * 1.4;   // 更细颗粒，配合小格子
+                    bool white = rnd.Next(2) == 0;
+                    byte alpha = (byte)(white ? (110 + rnd.Next(120)) : (70 + rnd.Next(90)));
+                    byte gray = (byte)(white ? 255 : (150 + rnd.Next(80)));
+                    var dot = new Ellipse
+                    {
+                        Width = sz, Height = sz,
+                        Fill = new SolidColorBrush(System.Windows.Media.Color.FromArgb(alpha, gray, gray, gray))
+                    };
+                    Canvas.SetLeft(dot, px);
+                    Canvas.SetTop(dot, py);
+                    c.Children.Add(dot);
+                }
 
-            // 2) 交错的小方块马赛克纹，进一步打散底下文字轮廓
+            // 2) 交错的小方块马赛克纹，打散底下文字轮廓
             int grid = 14;
             for (double x = 0; x < w; x += grid)
                 for (double y = 0; y < h; y += grid)
@@ -365,21 +434,25 @@ namespace WeChatMosaic
                     c.Children.Add(sq);
                 }
 
-            // 3) 柔和高光块，保留一点玻璃的通透光泽
-            for (int i = 0; i < 6; i++)
-            {
-                var glow = new Ellipse
+            // 3) 柔和高光：也按网格散开，别挤一块
+            int glowCols = 2, glowRows = 3;
+            for (int gy = 0; gy < glowRows; gy++)
+                for (int gx = 0; gx < glowCols; gx++)
                 {
-                    Width = 50 + rnd.NextDouble() * 90,
-                    Height = 50 + rnd.NextDouble() * 90,
-                    Fill = new RadialGradientBrush(
-                        System.Windows.Media.Color.FromArgb(70, 255, 255, 255),
-                        System.Windows.Media.Color.FromArgb(0, 255, 255, 255))
-                };
-                Canvas.SetLeft(glow, rnd.NextDouble() * Math.Max(1, w - 100));
-                Canvas.SetTop(glow, rnd.NextDouble() * Math.Max(1, h - 100));
-                c.Children.Add(glow);
-            }
+                    var glow = new Ellipse
+                    {
+                        Width = 50 + rnd.NextDouble() * 90,
+                        Height = 50 + rnd.NextDouble() * 90,
+                        Fill = new RadialGradientBrush(
+                            System.Windows.Media.Color.FromArgb(70, 255, 255, 255),
+                            System.Windows.Media.Color.FromArgb(0, 255, 255, 255))
+                    };
+                    double px = (gx + rnd.NextDouble()) * Math.Max(1, (w - 100) / glowCols);
+                    double py = (gy + rnd.NextDouble()) * Math.Max(1, (h - 100) / glowRows);
+                    Canvas.SetLeft(glow, px);
+                    Canvas.SetTop(glow, py);
+                    c.Children.Add(glow);
+                }
             c.IsHitTestVisible = false;
             return c;
         }
@@ -424,6 +497,34 @@ namespace WeChatMosaic
             UpdateBadge();
         }
 
+        // 设置鼠标穿透：开启后点击/滚轮会漏到下层（微信），不能拖动；关闭则可编辑
+        public void SetClickThrough(bool through)
+        {
+            pendingClickThrough = through;
+            ApplyClickThrough(through);
+        }
+
+        private void ApplyClickThrough(bool through)
+        {
+            try
+            {
+                var hwnd = new WindowInteropHelper(this).Handle;
+                if (hwnd == IntPtr.Zero) return; // 句柄还没创建，OnSourceInitialized 时会补上
+                int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+                if (through) ex |= WS_EX_TRANSPARENT | WS_EX_LAYERED;
+                else ex &= ~WS_EX_TRANSPARENT;
+                SetWindowLong(hwnd, GWL_EXSTYLE, ex);
+            }
+            catch { }
+        }
+
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_TRANSPARENT = 0x00000020;
+        private const int WS_EX_LAYERED = 0x00080000;
+
+        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
         private void DragStart(object s, MouseButtonEventArgs e)
         {
             if (!MainWindow.EditMode) return;
@@ -439,6 +540,7 @@ namespace WeChatMosaic
             // 用屏幕坐标计算，避免窗口变大时坐标系变化导致抖动
             var startScreen = PointToScreen(e.GetPosition(win));
             double sw = Width, sh = Height;
+            suppressResample = true; // 拖拽过程中不重复取色
             MouseEventHandler mv = null;
             mv = (s2, e2) =>
             {
@@ -448,7 +550,13 @@ namespace WeChatMosaic
             };
             handle.CaptureMouse();
             handle.MouseMove += mv;
-            handle.MouseLeftButtonUp += (s2, e2) => { handle.MouseMove -= mv; handle.ReleaseMouseCapture(); };
+            handle.MouseLeftButtonUp += (s2, e2) =>
+            {
+                handle.MouseMove -= mv;
+                handle.ReleaseMouseCapture();
+                suppressResample = false;
+                ApplyStyle(); // 松手后按最终尺寸重建纹理会重新取色
+            };
         }
 
         protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
@@ -459,7 +567,8 @@ namespace WeChatMosaic
             var b = new MenuItem { Header = "模糊", IsChecked = Data.Style == "blur" }; b.Click += (s, ev) => { Data.Style = "blur"; ApplyStyle(); };
             var mo = new MenuItem { Header = "马赛克", IsChecked = Data.Style == "mosaic" }; mo.Click += (s, ev) => { Data.Style = "mosaic"; ApplyStyle(); };
             var so = new MenuItem { Header = "纯色", IsChecked = Data.Style == "solid" }; so.Click += (s, ev) => { Data.Style = "solid"; ApplyStyle(); };
-            var refresh = new MenuItem { Header = "重新取色（毛玻璃用）" }; refresh.Click += (s, ev) => { if (Data.Style == "glass") ApplyStyle(); };
+            var refresh = new MenuItem { Header = "重新取色（毛玻璃用）" };
+            refresh.Click += (s, ev) => { if (Data.Style == "glass") { cachedSample = System.Windows.Media.Color.FromRgb(0xF5, 0xF5, 0xF5); suppressResample = false; ApplyStyle(); } };
             var del = new MenuItem { Header = "删除此块" }; del.Click += (s, ev) => MainWindow.Instance.RemoveRegion(this);
 
             m.Items.Add(bl); m.Items.Add(b); m.Items.Add(mo); m.Items.Add(so); m.Items.Add(new Separator());
@@ -509,7 +618,7 @@ namespace WeChatMosaic
 
         // 跟随微信自动遮挡
         private DispatcherTimer wechatWatcher;
-        private bool followWeChat = true;   // 是否跟随微信自动遮挡
+        // 跟随开关已迁入 Config.FollowEnabled
         private bool manualOverride = false; // 用户手动按热键后，暂停自动跟随
 
         // Win32 全局热键
@@ -546,8 +655,9 @@ namespace WeChatMosaic
             var btnAdd = new Button { Content = "＋ 新增遮挡块", Margin = new Thickness(0, 2, 0, 2), Padding = new Thickness(0, 6, 0, 6) };
             btnAdd.Click += (s, e) => AddRegion(new Region { X = 300, Y = 200, W = 300, H = 200, Style = "mosaic" });
 
-            var btnMode = new Button { Content = "🔒 锁定位置（进入遮挡模式）", Margin = new Thickness(0, 2, 0, 2), Padding = new Thickness(0, 6, 0, 6) };
+            var btnMode = new Button { Margin = new Thickness(0, 2, 0, 2), Padding = new Thickness(0, 6, 0, 6) };
             btnMode.Click += (s, e) => ToggleMode(btnMode);
+            btnModeRef = btnMode;
 
             var btnHide = new Button { Content = "👁 显示/隐藏全部 (" + Config.HotkeyText() + ")", Margin = new Thickness(0, 2, 0, 2), Padding = new Thickness(0, 6, 0, 6) };
             btnHide.Click += (s, e) => ToggleAll();
@@ -563,10 +673,10 @@ namespace WeChatMosaic
             RefreshFollowButton(btnFollow);
             btnFollow.Click += (s, e) =>
             {
-                followWeChat = !followWeChat;
+                Config.FollowEnabled = !Config.FollowEnabled;
                 manualOverride = false; // 重新开启自动跟随
                 RefreshFollowButton(btnFollow);
-                if (followWeChat) WeChatTick(); // 立即按当前状态刷一次
+                if (Config.FollowEnabled) WeChatTick(); // 立即按当前状态刷一次
             };
 
             var btnAutoStart = new Button { Margin = new Thickness(0, 2, 0, 2), Padding = new Thickness(0, 6, 0, 6) };
@@ -580,14 +690,101 @@ namespace WeChatMosaic
 
             sp.Children.Add(btnAdd); sp.Children.Add(btnMode); sp.Children.Add(btnHide); sp.Children.Add(btnHotkey); sp.Children.Add(btnFollow); sp.Children.Add(btnAutoStart); sp.Children.Add(btnClear);
 
+            sp.Children.Add(BuildSettingsPanel());
+
             sp.Children.Add(new TextBlock
             {
-                Text = "\n用法：\n• 新增块后，拖动摆到微信要遮住的位置，拖右下角调大小\n• 块上右键换样式：毛玻璃(推荐)/模糊/马赛克/纯色，可调不透明度、删除\n• 摆好后点“锁定位置”→ 鼠标可穿透、不挡操作\n• 跟随微信（默认开）：微信在用时自动遮挡；微信被别的窗口盖住、最小化或退出时自动收起\n• 热键：随时手动遮住/还原（按过一次后转为手动，再点“跟随微信”恢复自动）\n• 区域和热键自动保存，下次打开直接套用",
+                Text = "\n用法：\n• 新增块后，拖动摆到微信要遮住的位置，拖右下角调大小\n• 块上右键换样式：毛玻璃(推荐)/模糊/马赛克/纯色，可调不透明度、删除\n• 摆好后点“鼠标穿透：开”→ 点击直达微信，遮挡块不再挡操作（要再调就切回关）\n• 跟随微信（默认开）：微信在用时自动遮挡；微信被别的窗口盖住、最小化或退出时自动收起\n• 热键：随时手动遮住/还原（按过一次后转为手动，再点“跟随微信”恢复自动）\n• 区域和热键自动保存，下次打开直接套用",
                 FontSize = 11, Foreground = Brushes.Gray, TextWrapping = TextWrapping.Wrap
             });
             // 包一层滚动条，屏幕小或内容多时也能看全
             Content = new ScrollViewer { Content = sp, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         }
+
+        // ===== 可选参数面板 =====
+        private UIElement BuildSettingsPanel()
+        {
+            var panel = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "高级设置（可选参数）",
+                FontSize = 13, FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 0, 0, 6)
+            });
+
+            // 1. 跟随模式
+            panel.Children.Add(new TextBlock { Text = "跟随触发方式", FontSize = 11, Foreground = Brushes.Gray });
+            var cbMode = new ComboBox { Margin = new Thickness(0, 2, 0, 6) };
+            cbMode.Items.Add(new ComboBoxItem { Content = "智能：微信可见且当前正在用（推荐）", Tag = "smart" });
+            cbMode.Items.Add(new ComboBoxItem { Content = "微信窗口可见就遮挡", Tag = "visible" });
+            cbMode.Items.Add(new ComboBoxItem { Content = "微信进程运行就遮挡", Tag = "running" });
+            cbMode.Items.Add(new ComboBoxItem { Content = "不自动跟随，完全手动", Tag = "manual" });
+            cbMode.SelectedIndex = Config.FollowMode == "visible" ? 1 : Config.FollowMode == "running" ? 2 : Config.FollowMode == "manual" ? 3 : 0;
+            cbMode.SelectionChanged += (s, e) =>
+            {
+                var item = cbMode.SelectedItem as ComboBoxItem;
+                if (item == null) return;
+                Config.FollowMode = item.Tag as string;
+                if (Config.FollowMode == "manual") Config.FollowEnabled = false;
+                else { Config.FollowEnabled = true; manualOverride = false; }
+                Config.Save();
+                WeChatTick();
+            };
+            panel.Children.Add(cbMode);
+
+            // 2. 反向触发
+            var chkInvert = new CheckBox
+            {
+                Content = "反向触发：目标不可见/未运行时才遮挡",
+                FontSize = 11, IsChecked = Config.InvertFollow,
+                Margin = new Thickness(0, 2, 0, 6)
+            };
+            chkInvert.Checked += (s, e) => { Config.InvertFollow = true; Config.Save(); manualOverride = false; WeChatTick(); };
+            chkInvert.Unchecked += (s, e) => { Config.InvertFollow = false; Config.Save(); manualOverride = false; WeChatTick(); };
+            panel.Children.Add(chkInvert);
+
+            // 3. 检测间隔
+            panel.Children.Add(new TextBlock { Text = "检测间隔（越小越灵敏，越大越省电）", FontSize = 11, Foreground = Brushes.Gray });
+            var cbPoll = new ComboBox { Margin = new Thickness(0, 2, 0, 6) };
+            int[] ms = { 100, 300, 500, 1000, 2000 };
+            foreach (var v in ms) cbPoll.Items.Add(v + " ms");
+            int idx = Array.IndexOf(ms, Config.PollMs);
+            cbPoll.SelectedIndex = idx >= 0 ? idx : 1;
+            cbPoll.SelectionChanged += (s, e) =>
+            {
+                Config.PollMs = ms[cbPoll.SelectedIndex];
+                Config.Save();
+                RestartWatcher();
+            };
+            panel.Children.Add(cbPoll);
+
+            // 4. 目标进程名
+            panel.Children.Add(new TextBlock { Text = "跟随的目标进程（逗号分隔，可改成 QQ、DingTalk 等）", FontSize = 11, Foreground = Brushes.Gray });
+            var tbProc = new TextBox { Text = Config.TargetProcesses, Margin = new Thickness(0, 2, 0, 2) };
+            panel.Children.Add(tbProc);
+            var btnApplyProc = new Button { Content = "应用进程名", Margin = new Thickness(0, 2, 0, 4), Padding = new Thickness(8, 3, 8, 3), HorizontalAlignment = HorizontalAlignment.Left };
+            btnApplyProc.Click += (s, e) =>
+            {
+                Config.TargetProcesses = tbProc.Text.Trim();
+                if (Config.TargetProcesses.Length == 0) Config.TargetProcesses = "WeChat,Weixin";
+                tbProc.Text = Config.TargetProcesses;
+                Config.Save();
+                manualOverride = false;
+                WeChatTick();
+            };
+            panel.Children.Add(btnApplyProc);
+
+            return panel;
+        }
+
+        private void RestartWatcher()
+        {
+            if (wechatWatcher == null) return;
+            wechatWatcher.Stop();
+            wechatWatcher.Interval = TimeSpan.FromMilliseconds(Config.PollMs);
+            wechatWatcher.Start();
+        }
+
 
         protected override void OnSourceInitialized(EventArgs e)
         {
@@ -609,10 +806,11 @@ namespace WeChatMosaic
                 // 载入区域
                 foreach (var r in Config.Regions) SpawnMask(r, false);
                 SetEditModeAll(!Config.Locked);
+                RefreshModeButton();
                 UpdateVisibility();
                 SetupTray();
                 // 启动微信监听：每 300 毫秒检查一次微信窗口是否可见
-                wechatWatcher = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+                wechatWatcher = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Config.PollMs) };
                 wechatWatcher.Tick += (s, ev) => WeChatTick();
                 wechatWatcher.Start();
             }
@@ -624,42 +822,73 @@ namespace WeChatMosaic
 
         private void RefreshFollowButton(Button btn)
         {
-            if (btn != null) btn.Content = followWeChat ? "🟢 跟随微信：开（智能：用微信时遮挡）" : "⚪ 跟随微信：关（手动控制）";
+            if (btn != null) btn.Content = Config.FollowEnabled ? "🟢 跟随微信：开（智能：用微信时遮挡）" : "⚪ 跟随微信：关（手动控制）";
         }
 
         // 智能跟随：微信可见 + 前台窗口属于"微信家族/本工具" → 遮；
         // 微信被别的程序盖住（前台是别人）或最小化 → 收
+        // 根据配置判定"现在该不该遮挡"（支持 smart/visible/running/manual 四种模式 + 反向触发）
         private bool IsWeChatWindowVisible()
         {
             try
             {
-                // 1) 微信主窗口必须可见且未最小化（否则没必要遮）
-                bool wechatVisible = false;
-                foreach (var name in new[] { "WeChat", "Weixin" })
-                {
-                    foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
-                    {
-                        IntPtr h = p.MainWindowHandle;
-                        if (h != IntPtr.Zero && IsWindowVisible(h) && !IsIconic(h)) { wechatVisible = true; break; }
-                    }
-                    if (wechatVisible) break;
-                }
-                if (!wechatVisible) return false;
+                var names = Config.TargetProcesses.Split(',');
+                string self = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
 
-                // 2) 前台窗口必须属于"白名单"：微信家族 或 本工具自身（含其右键菜单/控制窗）
+                // 1) 目标进程是否在运行
+                bool running = false;
+                foreach (var n in names)
+                {
+                    var name = n.Trim();
+                    if (name.Length == 0) continue;
+                    if (System.Diagnostics.Process.GetProcessesByName(name).Length > 0) { running = true; break; }
+                }
+
+                // running 模式：只要进程在就遮（不管窗口状态）
+                if (Config.FollowMode == "running")
+                    return Config.InvertFollow ? !running : running;
+
+                // 2) 目标主窗口是否可见且未最小化
+                bool targetVisible = false;
+                if (running)
+                {
+                    foreach (var n in names)
+                    {
+                        var name = n.Trim();
+                        if (name.Length == 0) continue;
+                        foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
+                        {
+                            IntPtr h = p.MainWindowHandle;
+                            if (h != IntPtr.Zero && IsWindowVisible(h) && !IsIconic(h)) { targetVisible = true; break; }
+                        }
+                        if (targetVisible) break;
+                    }
+                }
+
+                // visible 模式：可见就遮
+                if (Config.FollowMode == "visible")
+                    return Config.InvertFollow ? !targetVisible : targetVisible;
+
+                // manual 模式：不走自动跟随，保持手动状态
+                if (Config.FollowMode == "manual")
+                    return visible;
+
+                if (!targetVisible)
+                    return Config.InvertFollow; // 智能模式 + 反向：不可见才遮
+
+                // smart 模式：可见 + 前台窗口属于白名单（目标进程 或 本工具自身）
                 IntPtr fg = GetForegroundWindow();
-                if (fg == IntPtr.Zero) return true; // 拿不到前台时保守起见仍遮
+                if (fg == IntPtr.Zero) return true;
                 uint pid;
                 GetWindowThreadProcessId(fg, out pid);
                 string fgName;
                 try { fgName = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; }
                 catch { return true; }
-                string self = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
 
-                // 前台是 微信 / 本工具 → 遮；前台是别的程序 → 说明微信被盖住，收
-                return fgName.Equals("WeChat", StringComparison.OrdinalIgnoreCase)
-                    || fgName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
-                    || fgName.Equals(self, StringComparison.OrdinalIgnoreCase);
+                if (fgName.Equals(self, StringComparison.OrdinalIgnoreCase)) return true;
+                foreach (var n in names)
+                    if (fgName.Equals(n.Trim(), StringComparison.OrdinalIgnoreCase)) return true;
+                return false;
             }
             catch { return false; }
         }
@@ -715,7 +944,7 @@ namespace WeChatMosaic
         // 每 300ms 检查：跟随模式下，微信窗口可见→显示，否则→隐藏
         private void WeChatTick()
         {
-            if (!followWeChat || manualOverride) return;
+            if (!Config.FollowEnabled || manualOverride) return;
             bool shouldShow = IsWeChatWindowVisible();
             if (shouldShow != visible)
             {
@@ -821,6 +1050,7 @@ namespace WeChatMosaic
             var m = new MaskWindow(r);
             masks.Add(m);
             m.SetEditMode(EditMode);
+            m.SetClickThrough(!EditMode); // 与当前模式保持一致
             if (visible) m.Show(); else m.Hide();
         }
 
@@ -832,18 +1062,48 @@ namespace WeChatMosaic
             Config.Save();
         }
 
+        // 防抖保存：拖尺寸/调透明度时不会每帧写盘
+        private DispatcherTimer saveTimer;
+
+        public static void RequestSave()
+        {
+            var inst = Instance;
+            if (inst == null) return;
+            if (inst.saveTimer == null)
+            {
+                inst.saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+                inst.saveTimer.Tick += (s, e) => { inst.saveTimer.Stop(); Config.Save(); };
+            }
+            inst.saveTimer.Stop();
+            inst.saveTimer.Start();
+        }
+
         private void ToggleMode(Button btn)
         {
             SetEditModeAll(!EditMode);
-            btn.Content = EditMode ? "🔒 锁定位置（进入遮挡模式）" : "✏️ 解锁编辑（可拖动/调整）";
+            RefreshModeButton();
             Config.Locked = !EditMode;
             Config.Save();
+        }
+
+        private Button btnModeRef;
+
+        private void RefreshModeButton()
+        {
+            if (btnModeRef == null) return;
+            btnModeRef.Content = EditMode
+                ? "🖱 鼠标穿透：关（编辑中，可拖动）"
+                : "🖱 鼠标穿透：开（点击直达微信）";
         }
 
         private void SetEditModeAll(bool edit)
         {
             EditMode = edit;
-            foreach (var m in masks) m.SetEditMode(edit);
+            foreach (var m in masks)
+            {
+                m.SetEditMode(edit);
+                m.SetClickThrough(!edit);   // 编辑模式关穿透；锁定模式开穿透
+            }
         }
 
         private void ToggleAll()

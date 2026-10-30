@@ -72,7 +72,8 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 | 不透明度 | 右键菜单里的 `Slider`（`OnMouseRightButtonUp`） | 0.3~1.0，实时生效 |
 | 全局热键 | `MainWindow.RegisterCurrentHotkey()` + `WndProc` | `RegisterHotKey` 拦截 `WM_HOTKEY` |
 | 自定义热键捕获 | `MainWindow.CaptureKey()` | 用 `e.KeyboardDevice.Modifiers` 读修饰键，别用 `Keyboard.IsKeyDown`（Alt 会失效） |
-| 跟随微信 | `MainWindow.WeChatTick()` + `IsWeChatWindowVisible()` | 默认 300ms；判断**前台窗口进程名**是否 WeChat/Weixin |
+| 跟随微信 | `MainWindow.WeChatTick()` + `IsWeChatWindowVisible()` | 默认 300ms；判断**微信可见（未最小化）且前台窗口属于白名单**（WeChat/Weixin/本工具自身） |
+| 鼠标穿透 | `MaskWindow.SetClickThrough()` / `ApplyClickThrough()` | `GetWindowLong/SetWindowLong` 加 `WS_EX_TRANSPARENT`；**句柄未创建时要靠 `pendingClickThrough` 在 `OnSourceInitialized` 补应用** |
 | 托盘 | `MainWindow.SetupTray()` | `System.Windows.Forms.NotifyIcon` |
 | 开机自启 | `MainWindow.SetAutoStart()` | 写 `HKCU\...\Run`，无需管理员 |
 | 配置保存 | `Config.Save()/Load()` | 手写 JSON；加字段记得同步改这两处 |
@@ -84,9 +85,11 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 **"想改默认热键"** → 改 `Config.HotkeyVk`（主键 VK 码）和 `Config.HotkeyMods`（修饰键：Ctrl=2 Alt=1 Shift=4 Win=8），然后**删掉旧的 `mosaic-config.json`**（否则旧配置覆盖新默认值）。
 
 **"想改跟随微信的检测逻辑"** → 改 `IsWeChatWindowVisible()`：
-- 想"微信可见就遮（哪怕不在前台）"→ 改回枚举进程 + `IsWindowVisible(h) && !IsIconic(h)`
-- 想"前台才遮"（当前实现）→ 用 `GetForegroundWindow` + 进程名
-- 想加别的软件（如 QQ、钉钉）→ 在进程名数组里加 `"QQ"`、`"DingTalk"` 等
+**"想改跟随微信的检测逻辑"** → 改 `IsWeChatWindowVisible()`：
+- 当前实现是 **微信可见 + 前台窗口属于白名单（WeChat/Weixin/本工具）**
+- 想"只要微信可见就遮（不管前台是谁）"→ 删掉后半段白名单判断，直接 `return wechatVisible`
+- 想"前台才遮"→ 只保留 `GetForegroundWindow` 进程名判断（但点右键/控制窗会误收起，不推荐）
+- 想加别的软件（如 QQ、钉钉）→ 在白名单里加 `"QQ"`、`"DingTalk"` 等
 
 **"想改检测频率"** → `wechatWatcher = new DispatcherTimer { Interval = ... }`
 
@@ -104,8 +107,8 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 1. 双击 exe → 屏幕出现色块 + 一个控制小窗口
 2. 拖色块到微信要遮的地方，拖右下角黄点调大小
 3. 色块上右键换样式（推荐"毛玻璃"）、拖滑块调透明度
-4. 点「锁定位置」→ 鼠标就能穿透、正常聊微信
-5. 之后基本不用管：微信在前台自动遮，切走自动收
+4. 点「🖱 鼠标穿透：开」→ 点击直达微信、正常聊天；要再调就切回"关"
+5. 之后基本不用管：微信在用时自动遮，被别的窗口盖住/最小化自动收
 6. 想手动开关 → 按热键；想退出 → 右键右下角托盘图标
 
 ---
