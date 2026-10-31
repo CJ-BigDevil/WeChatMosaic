@@ -314,6 +314,24 @@ namespace WeChatMosaic
         private System.Windows.Media.Color cachedSample = System.Windows.Media.Color.FromRgb(0xF5, 0xF5, 0xF5);
         private bool suppressResample = false; // 拖拽调整大小时不重复取色，避免闪烁
 
+        // 取当前窗口的 DIP→物理像素缩放（高 DPI 下取色/坐标必须换算）
+        private void GetDpiScale(out double sx, out double sy)
+        {
+            sx = 1.0; sy = 1.0;
+            try
+            {
+                var src = PresentationSource.FromVisual(this);
+                if (src != null && src.CompositionTarget != null)
+                {
+                    var m = src.CompositionTarget.TransformToDevice;
+                    sx = m.M11; sy = m.M22;
+                }
+            }
+            catch { }
+            if (sx <= 0) sx = 1.0;
+            if (sy <= 0) sy = 1.0;
+        }
+
         private System.Windows.Media.Color SampleColorBehind()
         {
             try
@@ -325,8 +343,11 @@ namespace WeChatMosaic
                 try
                 {
                     long r = 0, g = 0, b = 0; int n = 0;
-                    int L = (int)Left, T = (int)Top, W = (int)Width, H = (int)Height;
-                    int m = 6; // 向外偏移像素
+                    // Left/Top/Width/Height 是 DIP，GetPixel 用物理像素，高 DPI 下需乘缩放
+                    double sx, sy; GetDpiScale(out sx, out sy);
+                    int L = (int)(Left * sx), T = (int)(Top * sy);
+                    int W = (int)(Width * sx), H = (int)(Height * sy);
+                    int m = (int)(6 * sx); // 向外偏移像素
                     // 按边采 8 点（上下左右中点 + 四角）
                     int[][] pts = {
                         new[]{ L + W/2, T - m }, new[]{ L + W/2, T + H + m },
@@ -524,6 +545,26 @@ namespace WeChatMosaic
 
         [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
         [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        // 当前窗口句柄（可能为 0，未创建时）
+        public IntPtr Hwnd { get { try { return new WindowInteropHelper(this).Handle; } catch { return IntPtr.Zero; } } }
+
+        // 被微信置顶等操作压到下面时，把自己重新顶回最上层
+        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        private const uint SWP_NOMOVE = 0x0002, SWP_NOSIZE = 0x0001, SWP_NOACTIVATE = 0x0010;
+        [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+            int X, int Y, int cx, int cy, uint uFlags);
+
+        public void BringToTop()
+        {
+            try
+            {
+                var h = Hwnd;
+                if (h == IntPtr.Zero) return;
+                SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            catch { }
+        }
 
         private void DragStart(object s, MouseButtonEventArgs e)
         {
@@ -848,20 +889,16 @@ namespace WeChatMosaic
                 if (Config.FollowMode == "running")
                     return Config.InvertFollow ? !running : running;
 
-                // 2) 目标主窗口是否可见且未最小化
+                // 2) 目标顶层可见窗口（含子窗口）是否存在且未最小化；顺带记录是否有置顶窗口
                 bool targetVisible = false;
+                bool targetTopmost = false;
                 if (running)
                 {
-                    foreach (var n in names)
+                    foreach (var h in GetTargetMainWindows())
                     {
-                        var name = n.Trim();
-                        if (name.Length == 0) continue;
-                        foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
-                        {
-                            IntPtr h = p.MainWindowHandle;
-                            if (h != IntPtr.Zero && IsWindowVisible(h) && !IsIconic(h)) { targetVisible = true; break; }
-                        }
-                        if (targetVisible) break;
+                        if (IsIconic(h)) continue; // 跳过最小化的，但还有其它可见窗口就算可见
+                        targetVisible = true;
+                        if ((GetWindowLong(h, GWL_EXSTYLE2) & WS_EX_TOPMOST) != 0) targetTopmost = true;
                     }
                 }
 
@@ -875,6 +912,10 @@ namespace WeChatMosaic
 
                 if (!targetVisible)
                     return Config.InvertFollow; // 智能模式 + 反向：不可见才遮
+
+                // 目标窗口置顶时，即使切到别的程序它也浮在最上层、仍可能被看到 → 保持遮挡
+                if (targetTopmost)
+                    return Config.InvertFollow ? false : true;
 
                 // smart 模式：可见 + 前台窗口属于白名单（目标进程 或 本工具自身）
                 IntPtr fg = GetForegroundWindow();
@@ -893,10 +934,71 @@ namespace WeChatMosaic
             catch { return false; }
         }
 
+        // 取目标进程的所有顶层可见窗口（含主窗口 + 朋友圈/图片查看器等独立子窗口）。
+        // 只取 MainWindowHandle 会漏掉这些子窗口，导致跟随和层级检测认不到。
+        private System.Collections.Generic.List<IntPtr> GetTargetMainWindows()
+        {
+            var list = new System.Collections.Generic.List<IntPtr>();
+            try
+            {
+                // 收集目标进程的所有 PID
+                var pids = new System.Collections.Generic.HashSet<int>();
+                foreach (var n in Config.TargetProcesses.Split(','))
+                {
+                    var name = n.Trim();
+                    if (name.Length == 0) continue;
+                    foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
+                        pids.Add(p.Id);
+                }
+                if (pids.Count == 0) return list;
+
+                // 枚举所有顶层窗口，按 PID 过滤出属于目标进程、且可见的
+                EnumWindows(delegate(IntPtr h, IntPtr l)
+                {
+                    uint pid;
+                    GetWindowThreadProcessId(h, out pid);
+                    if (pids.Contains((int)pid) && IsWindowVisible(h))
+                        list.Add(h);
+                    return true;
+                }, IntPtr.Zero);
+            }
+            catch { }
+            return list;
+        }
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        // 微信置顶后会把遮挡块压到下面（同为 Topmost，后顶上去的在上）。
+        // 检测：沿 Z-order 从遮挡块向上(GW_HWNDPREV)找，若先碰到目标窗口说明遮挡被压，需要重新置顶。
+        private void ReTopIfCovered()
+        {
+            if (!visible || masks.Count == 0) return;
+            var targets = GetTargetMainWindows();
+            if (targets.Count == 0) return;
+            foreach (var m in masks)
+            {
+                IntPtr mh = m.Hwnd;
+                if (mh == IntPtr.Zero) continue;
+                // 从遮挡块的上一层往上走，碰到目标主窗口即被压
+                IntPtr cur = GetWindow(mh, GW_HWNDPREV);
+                int guard = 0;
+                while (cur != IntPtr.Zero && guard++ < 64)
+                {
+                    if (targets.Contains(cur)) { m.BringToTop(); break; }
+                    cur = GetWindow(cur, GW_HWNDPREV);
+                }
+            }
+        }
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
         [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+        [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+        private const uint GW_HWNDPREV = 3;
+        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        private const int GWL_EXSTYLE2 = -20;
+        private const int WS_EX_TOPMOST = 0x00000008;
 
         // ===== 开机自启动（写当前用户注册表 Run 键，无需管理员）=====
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -944,6 +1046,9 @@ namespace WeChatMosaic
         // 每 300ms 检查：跟随模式下，微信窗口可见→显示，否则→隐藏
         private void WeChatTick()
         {
+            // 无论跟随还是手动，只要遮挡当前可见，先检查是否被微信置顶压到下面，压住了就顶回去
+            if (visible) ReTopIfCovered();
+
             if (!Config.FollowEnabled || manualOverride) return;
             bool shouldShow = IsWeChatWindowVisible();
             if (shouldShow != visible)
@@ -963,12 +1068,16 @@ namespace WeChatMosaic
             return IntPtr.Zero;
         }
 
-        // 注册当前配置的热键（先注销旧的）
-        private void RegisterCurrentHotkey()
+        // 注册当前配置的热键（先注销旧的）；返回是否成功
+        private bool RegisterCurrentHotkey()
         {
-            if (hwndSource == null) return;
+            if (hwndSource == null) return false;
             UnregisterHotKey(hwndSource.Handle, HOTKEY_ID);
-            RegisterHotKey(hwndSource.Handle, HOTKEY_ID, Config.HotkeyMods, (uint)Config.HotkeyVk);
+            bool ok = RegisterHotKey(hwndSource.Handle, HOTKEY_ID, Config.HotkeyMods, (uint)Config.HotkeyVk);
+            if (!ok)
+                MessageBox.Show("热键 " + Config.HotkeyText() + " 注册失败，可能被其它软件占用。\n请在「设置热键」里换一个组合。",
+                    "马赛克工具", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return ok;
         }
 
         // ===== 设置热键：点按钮后捕获下一次按键组合 =====
@@ -1174,6 +1283,10 @@ namespace WeChatMosaic
         [STAThread]
         public static void Main()
         {
+            // 进程级 DPI 感知（PerMonitorV2），保证取色/坐标在高缩放下正确
+            try { SetProcessDpiAwarenessContext(new IntPtr(-4)); }  // PER_MONITOR_AWARE_V2
+            catch { try { SetProcessDPIAware(); } catch { } }
+
             // 单实例：已在运行则把已有窗口唤到最前，不再开新实例
             var cur = System.Diagnostics.Process.GetCurrentProcess();
             var others = System.Diagnostics.Process.GetProcessesByName(cur.ProcessName)
@@ -1209,5 +1322,7 @@ namespace WeChatMosaic
 
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+        [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
     }
 }

@@ -72,8 +72,10 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 | 不透明度 | 右键菜单里的 `Slider`（`OnMouseRightButtonUp`） | 0.3~1.0，实时生效 |
 | 全局热键 | `MainWindow.RegisterCurrentHotkey()` + `WndProc` | `RegisterHotKey` 拦截 `WM_HOTKEY` |
 | 自定义热键捕获 | `MainWindow.CaptureKey()` | 用 `e.KeyboardDevice.Modifiers` 读修饰键，别用 `Keyboard.IsKeyDown`（Alt 会失效） |
-| 跟随微信 | `MainWindow.WeChatTick()` + `IsWeChatWindowVisible()` | 默认 300ms；判断**微信可见（未最小化）且前台窗口属于白名单**（WeChat/Weixin/本工具自身） |
+| 跟随微信 | `MainWindow.WeChatTick()` + `IsWeChatWindowVisible()` | 默认 300ms；smart 模式=可见+前台白名单；**目标窗口置顶(Topmost)时保持遮挡**；目标窗口用 `GetTargetMainWindows()` 枚举该进程**所有顶层可见窗口**（含子窗口） |
+| 置顶兼容 | `MainWindow.ReTopIfCovered()` + `MaskWindow.BringToTop()` | 微信置顶会压过遮挡（同为 Topmost 后顶者在上）；沿 Z-order(`GW_HWNDPREV`)检测被压则 `SetWindowPos(HWND_TOPMOST)` 重顶 |
 | 鼠标穿透 | `MaskWindow.SetClickThrough()` / `ApplyClickThrough()` | `GetWindowLong/SetWindowLong` 加 `WS_EX_TRANSPARENT`；**句柄未创建时要靠 `pendingClickThrough` 在 `OnSourceInitialized` 补应用** |
+| DPI 感知 | `App.Main()` 设 PerMonitorV2 + `MaskWindow.GetDpiScale()` | 取色用物理像素，`Left/Top` 是 DIP，必须 `×TransformToDevice` 缩放，否则高 DPI 取色偏 |
 | 托盘 | `MainWindow.SetupTray()` | `System.Windows.Forms.NotifyIcon` |
 | 开机自启 | `MainWindow.SetAutoStart()` | 写 `HKCU\...\Run`，无需管理员 |
 | 配置保存 | `Config.Save()/Load()` | 手写 JSON；加字段记得同步改这两处 |
@@ -120,10 +122,12 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 | 双击没反应 | 看任务栏/托盘有没有窗口；可能已在后台运行（单实例会把旧窗口唤到前面） |
 | 编译报一堆乱码错 | 源码编码不是 UTF-8 BOM，按第 3 节转码 |
 | 编译报"本地函数/字符串插值"错 | 用了 C# 6+ 语法，改成 C# 5 写法 |
-| 热键设置了不生效 | 检查是否带了修饰键；某些组合被系统/其它软件占用 |
-| 微信在前台但遮挡没出现 | 新版微信子窗口进程名不同；把检测范围放宽或加进程名 |
+| 热键设置了不生效 | 检查是否带了修饰键；若被占用，`RegisterCurrentHotkey()` 现在会弹窗提示换一个 |
+| 微信在前台但遮挡没出现 | 目标子窗口进程名不同；在高级设置的「目标进程」里加上对应进程名 |
+| **点开公众号文章遮挡不跟过去** | **设计取舍，不是 bug**：文章/网页在微信内置独立浏览器窗口，遮挡故意不覆盖，否则会糊住你正读的文章。见 README 已知限制 |
+| 微信置顶后遮挡被压 / 切走消失 | 已在 v1.1.1 修复：置顶时遮挡保持在其上且不消失（`ReTopIfCovered` + Topmost 检测） |
+| 高 DPI 下毛玻璃颜色对不上 | 已在 v1.1.1 声明 PerMonitorV2 + 取色按缩放换算；多屏混合 DPI 仍未充分验证 |
 | 改了默认配置但没生效 | 旧 `mosaic-config.json` 覆盖了，删掉它再启动 |
-| 最小化微信遮挡没消失 | 检测模式问题；确认用的是"前台检测"还是"可见检测" |
 
 ---
 
@@ -135,3 +139,4 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 - 任何"拖动/调大小抖动"问题，先看是不是又用了相对坐标，改回屏幕坐标 / `DragMove()`
 - 保持单文件结构，别轻易拆分（用户就图个简单）
 - 用户是中文使用者，**全程用中文回复**
+- **别把这些设计取舍当 bug 修**：① 公众号文章/内置浏览器独立窗口不跟随遮挡（故意，否则糊住文章）；② 毛玻璃是程序化磨砂而非实时亚克力（实时模糊耗性能且可能透出文字，违背遮挡目的）；③ 300ms 轮询而非事件钩子（实测 CPU 仅约 3.4%，换事件驱动收益小、复杂度高）。改之前先问用户
