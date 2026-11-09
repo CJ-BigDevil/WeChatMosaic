@@ -21,6 +21,7 @@
 WeChatMosaic/
 ├── MosaicApp.cs        ← 全部源码（单文件，约 900 行）
 ├── WeChatMosaic.exe    ← 编译产物（被 .gitignore 忽略）
+├── assets/app.ico    ← 应用图标（编译时嵌入 exe，运行时无需携带）
 ├── mosaic-config.json  ← 运行时自动生成的个人配置（被 .gitignore 忽略）
 ├── README.md           ← 给人看的说明
 ├── CLAUDE.md           ← 本文件（给 AI 看）
@@ -46,6 +47,7 @@ set CSC=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 
 %CSC% -nologo -target:winexe -platform:x64 -out:WeChatMosaic.exe ^
+  -win32icon:assets\app.ico ^
   -r:"%WPF%\PresentationFramework.dll" -r:"%WPF%\PresentationCore.dll" ^
   -r:"%WPF%\WindowsBase.dll" -r:System.dll -r:System.Core.dll -r:System.Xaml.dll ^
   -r:System.Windows.Forms.dll -r:System.Drawing.dll ^

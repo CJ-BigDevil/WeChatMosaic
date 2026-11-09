@@ -74,6 +74,7 @@ set CSC=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 
 %CSC% -nologo -target:winexe -platform:x64 -out:WeChatMosaic.exe ^
+  -win32icon:assets\app.ico ^
   -r:"%WPF%\PresentationFramework.dll" ^
   -r:"%WPF%\PresentationCore.dll" ^
   -r:"%WPF%\WindowsBase.dll" ^
@@ -83,7 +84,7 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
   MosaicApp.cs
 ```
 
-编译产出单个 `WeChatMosaic.exe`，即可直接运行。
+编译产出单个 `WeChatMosaic.exe`，即可直接运行。应用图标嵌在 exe 中，**不需要把 `assets/app.ico` 放到 exe 旁边**；`assets` 目录仅在重新编译时需要。
 
 > ⚠️ 源码需保存为 **UTF-8 带 BOM**，否则老编译器对中文字符串会乱码。
 > 也可以用任何支持 C# 的方式（如 Visual Studio / `dotnet`）编译，只是系统 csc 最省事。
@@ -95,6 +96,7 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 | 文件 | 说明 |
 |------|------|
 | `MosaicApp.cs` | 全部源码（单文件，WPF） |
+| `assets/app.ico` | 编译期使用的应用图标（已嵌入 exe，运行时无需携带） |
 | `WeChatMosaic.exe` | 编译产物，可直接运行 |
 | `mosaic-config.json` | 运行后自动生成的配置文件（区域/样式/热键等） |
 

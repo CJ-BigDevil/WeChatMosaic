@@ -674,6 +674,7 @@ namespace WeChatMosaic
             Width = 400; Height = 380;
             MinWidth = 360; MinHeight = 300;
             Title = "马赛克工具";
+            Icon = LoadAppIcon();
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Topmost = false;
             BuildUI();
@@ -1230,12 +1231,28 @@ namespace WeChatMosaic
         private System.Windows.Forms.NotifyIcon trayIcon;
         private bool reallyQuit = false;
 
+        // 图标作为 Win32 资源嵌入 exe；窗口、任务栏和托盘共用，无需外部文件。
+        private System.Drawing.Icon appIcon;
+
+        private static ImageSource LoadAppIcon()
+        {
+            string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+            using (var icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath))
+            {
+                return Imaging.CreateBitmapSourceFromHIcon(
+                    icon.Handle, Int32Rect.Empty,
+                    System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
+            }
+        }
+
         private void SetupTray()
         {
             trayIcon = new System.Windows.Forms.NotifyIcon();
             trayIcon.Text = "马赛克工具";
-            // 用系统自带图标，避免额外的 ico 文件
-            trayIcon.Icon = System.Drawing.SystemIcons.Application;
+            // 从 exe 提取嵌入图标，不要求 exe 旁边另有 ico 文件。
+            appIcon = System.Drawing.Icon.ExtractAssociatedIcon(
+                System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName);
+            trayIcon.Icon = appIcon;
             trayIcon.Visible = true;
             trayIcon.DoubleClick += (s, e) => ShowMain();
 
@@ -1272,6 +1289,7 @@ namespace WeChatMosaic
             }
             Config.Save();
             if (trayIcon != null) { trayIcon.Visible = false; trayIcon.Dispose(); }
+            if (appIcon != null) appIcon.Dispose();
             UnregisterHotKey(hwndSource != null ? hwndSource.Handle : IntPtr.Zero, HOTKEY_ID);
             foreach (var m in masks.ToList()) m.Close();
             base.OnClosing(e);

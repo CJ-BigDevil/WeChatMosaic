@@ -5,6 +5,16 @@
 
 # 运行时生成的个人配置（含个人屏幕坐标，不上传）
 mosaic-config.json
+local-backups/
+
+# 图标设计预览与本地绘图缓存
+assets/*.png
+assets/icon-preview.svg
+assets/icon.ico
+assets/candidate-*.ico
+assets/generate_*.py
+assets/capture_preview.py
+assets/__pycache__/
 
 # 系统/编辑器
 Thumbs.db
