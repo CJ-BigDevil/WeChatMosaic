@@ -6,9 +6,13 @@
 # 运行时生成的个人配置（含个人屏幕坐标，不上传）
 mosaic-config.json
 local-backups/
+RELEASE_NOTES.md
+WeChatMosaic-v*.zip
+release-notes.txt
 
 # 图标设计预览与本地绘图缓存
 assets/*.png
+!assets/app.png
 assets/icon-preview.svg
 assets/icon.ico
 assets/candidate-*.ico

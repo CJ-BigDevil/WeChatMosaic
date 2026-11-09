@@ -24,6 +24,7 @@ WeChatMosaic/
 ├── assets/app.ico    ← 应用图标（编译时嵌入 exe，运行时无需携带）
 ├── mosaic-config.json  ← 运行时自动生成的个人配置（被 .gitignore 忽略）
 ├── README.md           ← 给人看的说明
+├── RELEASING.md        ← 本地编译、打包与 GitHub Release 发布流程
 ├── CLAUDE.md           ← 本文件（给 AI 看）
 ├── LICENSE             ← MIT
 └── .gitignore
@@ -140,5 +141,7 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 - 改默认值类配置后，**提醒删旧 `mosaic-config.json`**
 - 任何"拖动/调大小抖动"问题，先看是不是又用了相对坐标，改回屏幕坐标 / `DragMove()`
 - 保持单文件结构，别轻易拆分（用户就图个简单）
+- 发布正式版本先读 **[RELEASING.md](./RELEASING.md)**；普通文档/代码提交不打标签、不创建 Release
+- 任何发布包都不得包含个人 `mosaic-config.json`、备份、候选图标或临时脚本
 - 用户是中文使用者，**全程用中文回复**
 - **别把这些设计取舍当 bug 修**：① 公众号文章/内置浏览器独立窗口不跟随遮挡（故意，否则糊住文章）；② 毛玻璃是程序化磨砂而非实时亚克力（实时模糊耗性能且可能透出文字，违背遮挡目的）；③ 300ms 轮询而非事件钩子（实测 CPU 仅约 3.4%，换事件驱动收益小、复杂度高）。改之前先问用户

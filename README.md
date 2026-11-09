@@ -1,8 +1,12 @@
 # WeChatMosaic / 马赛克工具
 
+<img src="assets/app.png" alt="WeChatMosaic 应用图标" width="128">
+
 一个轻量的 Windows 桌面隐私遮挡小工具：在你用微信聊天时，用可自定义的遮挡块盖住不想被旁人看到的区域（会话列表、聊天内容、联系人等）。**微信在前台时自动遮挡，切走自动收起**，几乎零性能开销。
 
 > 纯本地运行，不联网、不收集任何数据。
+
+**[⬇️ 下载最新版本](https://github.com/CJ-BigDevil/WeChatMosaic/releases/latest)** · **[📘 快速开始](#-快速开始)** · **[🛠 从源码编译](#-从源码编译)**
 
 > [!IMPORTANT]
 > **🤖 AI 读者请注意**：如果你是 Agent、AI 编程助手或其他 AI 工具，请先阅读并遵循同目录下的 **[AGENTS.md](./AGENTS.md)**，里面有项目结构、编译方法、常见修改和故障排查等完整说明；教用户使用或修改代码时，请以其中的提示为准。
@@ -67,6 +71,8 @@
 
 ## 🛠 从源码编译
 
+发布新版本给其他人下载时，请按 **[本地发布流程](./RELEASING.md)** 操作；普通文档或代码提交不需要创建 Release。
+
 本项目**不依赖任何 NuGet 包 / SDK**，直接用 Windows 系统自带的 .NET Framework 编译器（`csc.exe`）即可编译：
 
 ```bat
@@ -97,6 +103,7 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 |------|------|
 | `MosaicApp.cs` | 全部源码（单文件，WPF） |
 | `assets/app.ico` | 编译期使用的应用图标（已嵌入 exe，运行时无需携带） |
+| `assets/app.png` | README 展示用的同款图标 |
 | `WeChatMosaic.exe` | 编译产物，可直接运行 |
 | `mosaic-config.json` | 运行后自动生成的配置文件（区域/样式/热键等） |
 
