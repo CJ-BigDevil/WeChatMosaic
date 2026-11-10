@@ -19,13 +19,15 @@
 
 ```
 WeChatMosaic/
-├── MosaicApp.cs        ← 全部源码（单文件，约 900 行）
+├── MosaicApp.cs        ← 全部源码（单文件）
 ├── WeChatMosaic.exe    ← 编译产物（被 .gitignore 忽略）
-├── assets/app.ico    ← 应用图标（编译时嵌入 exe，运行时无需携带）
+├── assets/app.ico      ← 应用图标（编译时嵌入 exe，运行时无需携带）
+├── assets/app.png      ← README 展示用同款图标
 ├── mosaic-config.json  ← 运行时自动生成的个人配置（被 .gitignore 忽略）
 ├── README.md           ← 给人看的说明
+├── docs/使用说明.txt   ← 发布包使用说明模板（发布前同步核对）
 ├── RELEASING.md        ← 本地编译、打包与 GitHub Release 发布流程
-├── CLAUDE.md           ← 本文件（给 AI 看）
+├── CLAUDE.md           ← 指向本文件的入口说明
 ├── LICENSE             ← MIT
 └── .gitignore
 ```
@@ -81,28 +83,27 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 | DPI 感知 | `App.Main()` 设 PerMonitorV2 + `MaskWindow.GetDpiScale()` | 取色用物理像素，`Left/Top` 是 DIP，必须 `×TransformToDevice` 缩放，否则高 DPI 取色偏 |
 | 托盘 | `MainWindow.SetupTray()` | `System.Windows.Forms.NotifyIcon` |
 | 开机自启 | `MainWindow.SetAutoStart()` | 写 `HKCU\...\Run`，无需管理员 |
-| 配置保存 | `Config.Save()/Load()` | 手写 JSON；加字段记得同步改这两处 |
+| 配置保存 | `Config.Save()/Load()` | 手写 JSON；样式/透明度/尺寸防抖保存，位置在后续保存操作或正常退出时写入；加字段同步改两处 |
 
 ---
 
 ## 5. 常见"帮我改"需求的处理套路
 
-**"想改默认热键"** → 改 `Config.HotkeyVk`（主键 VK 码）和 `Config.HotkeyMods`（修饰键：Ctrl=2 Alt=1 Shift=4 Win=8），然后**删掉旧的 `mosaic-config.json`**（否则旧配置覆盖新默认值）。
+**"想改默认热键"** → 改 `Config.HotkeyVk`（主键 VK 码）和 `Config.HotkeyMods`（修饰键：Ctrl=2 Alt=1 Shift=4 Win=8）。**不要删用户的 `mosaic-config.json`**：已有配置优先于源码默认值，这是正常的；让用户在界面修改热键，或先备份再指导修改对应字段。
 
 **"想改跟随微信的检测逻辑"** → 改 `IsWeChatWindowVisible()`：
-**"想改跟随微信的检测逻辑"** → 改 `IsWeChatWindowVisible()`：
-- 当前实现是 **微信可见 + 前台窗口属于白名单（WeChat/Weixin/本工具）**
-- 想"只要微信可见就遮（不管前台是谁）"→ 删掉后半段白名单判断，直接 `return wechatVisible`
-- 想"前台才遮"→ 只保留 `GetForegroundWindow` 进程名判断（但点右键/控制窗会误收起，不推荐）
-- 想加别的软件（如 QQ、钉钉）→ 在白名单里加 `"QQ"`、`"DingTalk"` 等
+- 当前 `smart` 模式是 **目标可见 + 前台属于目标进程/本工具**；`targetTopmost` 为 true 时优先保持遮挡
+- 想"只要微信可见就遮（不管前台是谁）"→ 推荐把 `Config.FollowMode` 设为 `"visible"`，不用改代码；若确需改默认模式，先考虑旧配置的兼容性
+- 想"前台才遮"→ 保留 `GetForegroundWindow` 进程名判断，但点本工具控制窗时 `self` 白名单仍会保持遮挡；如要连本工具也排除，需单独调整
+- 想加别的软件（如 QQ、钉钉）→ 优先在「目标进程」配置里加 `"QQ"`、`"DingTalk"` 等，不必全局替换微信相关名称
 
-**"想改检测频率"** → `wechatWatcher = new DispatcherTimer { Interval = ... }`
+**"想改检测频率"** → 默认间隔在 `Config.PollMs`；用户已有配置优先，界面可选择 100/300/500/1000/2000ms。别只改注释里的“每 300ms”。
 
-**"毛玻璃太透/太实"** → `ApplyStyle()` 里 `glass.A = (byte)(Math.Max(op, 0.75) * 255)` 调下限；噪点在 `MakeFrostCanvas()` 调密度（`/16` 改小更密）和颗粒大小。
+**"毛玻璃太透/太实"** → `ApplyStyle()` 里 `glass.A = (byte)(Math.Max(op, 0.75) * 255)` 调下限；噪点在 `MakeFrostCanvas()` 调网格 `cell`（越小越密）和颗粒大小。
 
-**"想加新样式"** → 在 `ApplyStyle()` 加 `else if (Data.Style=="xxx")` 分支 + 右键菜单加一项 + `UpdateBadge`（如果还显示样式名）。
+**"想加新样式"** → 在 `ApplyStyle()` 加 `else if (Data.Style=="xxx")` 分支 + 右键菜单加一项。`UpdateBadge()` 当前固定隐藏徽标，不需要再加样式文字。
 
-**"想改成跟随别的窗口"** → 全局把 `WeChat/Weixin` 换成目标进程名即可。
+**"想改成跟随别的窗口"** → 优先在高级设置里修改 `Config.TargetProcesses`，不要全局替换 `WeChat/Weixin` 字符串。
 
 ---
 
@@ -113,7 +114,7 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 2. 拖色块到微信要遮的地方，拖右下角黄点调大小
 3. 色块上右键换样式（推荐"毛玻璃"）、拖滑块调透明度
 4. 点「🖱 鼠标穿透：开」→ 点击直达微信、正常聊天；要再调就切回"关"
-5. 之后基本不用管：微信在用时自动遮，被别的窗口盖住/最小化自动收
+5. 之后基本不用管：非置顶目标在前台切走/最小化后自动收；置顶时切走仍保持遮挡
 6. 想手动开关 → 按热键；想退出 → 右键右下角托盘图标
 
 ---
@@ -127,10 +128,10 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 | 编译报"本地函数/字符串插值"错 | 用了 C# 6+ 语法，改成 C# 5 写法 |
 | 热键设置了不生效 | 检查是否带了修饰键；若被占用，`RegisterCurrentHotkey()` 现在会弹窗提示换一个 |
 | 微信在前台但遮挡没出现 | 目标子窗口进程名不同；在高级设置的「目标进程」里加上对应进程名 |
-| **点开公众号文章遮挡不跟过去** | **设计取舍，不是 bug**：文章/网页在微信内置独立浏览器窗口，遮挡故意不覆盖，否则会糊住你正读的文章。见 README 已知限制 |
+| **公众号文章遮挡范围不确定** | 当前实现按进程枚举所有顶层可见窗口，没有按窗口类型排除内置浏览器；不同微信版本需实测，不能承诺“文章一定不跟随” |
 | 微信置顶后遮挡被压 / 切走消失 | 已在 v1.1.1 修复：置顶时遮挡保持在其上且不消失（`ReTopIfCovered` + Topmost 检测） |
 | 高 DPI 下毛玻璃颜色对不上 | 已在 v1.1.1 声明 PerMonitorV2 + 取色按缩放换算；多屏混合 DPI 仍未充分验证 |
-| 改了默认配置但没生效 | 旧 `mosaic-config.json` 覆盖了，删掉它再启动 |
+| 改了默认配置但没生效 | 已有 `mosaic-config.json` 优先于源码默认值，属正常；先备份配置，再指导改对应字段或在界面修改，不要删除用户的遮挡区域 |
 
 ---
 
@@ -138,10 +139,11 @@ set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
 
 - **改代码只用 C# 5 语法**（这是硬约束，csc 版本决定）
 - 改完**必须重新编译**并把新 exe 给用户（编译命令见第 3 节）
-- 改默认值类配置后，**提醒删旧 `mosaic-config.json`**
+- 改默认值类配置后，**不要删用户的 `mosaic-config.json`**；已有配置优先是设计行为。需要迁移时先备份，并只修改必要字段
+- 单实例仅按 exe 进程名判断；改名试用版可绕过检测，不要让它与正式版共用配置同时运行
 - 任何"拖动/调大小抖动"问题，先看是不是又用了相对坐标，改回屏幕坐标 / `DragMove()`
 - 保持单文件结构，别轻易拆分（用户就图个简单）
 - 发布正式版本先读 **[RELEASING.md](./RELEASING.md)**；普通文档/代码提交不打标签、不创建 Release
 - 任何发布包都不得包含个人 `mosaic-config.json`、备份、候选图标或临时脚本
 - 用户是中文使用者，**全程用中文回复**
-- **别把这些设计取舍当 bug 修**：① 公众号文章/内置浏览器独立窗口不跟随遮挡（故意，否则糊住文章）；② 毛玻璃是程序化磨砂而非实时亚克力（实时模糊耗性能且可能透出文字，违背遮挡目的）；③ 300ms 轮询而非事件钩子（实测 CPU 仅约 3.4%，换事件驱动收益小、复杂度高）。改之前先问用户
+- **别把这些设计取舍当 bug 修**：① 毛玻璃是程序化磨砂而非实时亚克力（实时模糊耗性能且可能透出文字，违背遮挡目的）；② 采用定时轮询而非事件钩子，默认 300ms 可调，修改前需评估性能收益与复杂度；③ 公众号文章/内置浏览器是否跟随目前未按窗口类型排除，不是已实现的保证，若要增加排除规则先与用户确认并实测
